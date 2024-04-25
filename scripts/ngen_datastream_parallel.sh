@@ -12,6 +12,8 @@ usage() {
 EXEC_DIR=""
 SM_ARN=""
 REGION=""
+OBJECT_KEY=""
+VPUs=("01" "02" "03N" "03S" "03W" "04" "05" "06" "07" "08" "09" "10L" "10U" "11" "12" "13" "14" "15" "16" "17" "18") 
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -22,14 +24,44 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-exec_files=$(ls "$EXEC_DIR")
-for file in $exec_files
-do
+check_s3_object() {
+    aws s3 ls "s3://$1" > /dev/null 2>&1
+    return $?
+}
+
+exec_files=$(ls "$EXEC_DIR")              
+
+file=$(find $EXEC_DIR -type f -name '*_fp.json')
+
+echo "Executing state machine $SM_ARN with $file"
+aws stepfunctions start-execution \
+    --state-machine-arn $SM_ARN \
+    --name $(env TZ=US/Eastern date +'%Y%m%d%H%M%S')\
+    --input "file://"$file"" --region $REGION 
+
+OBJECT_KEY=$(jq -r '.obj_key' "$file")
+BUCKET=$(jq -r '.bucket' "$file")
+OBJECT_KEY=$BUCKET/$OBJECT_KEY
+echo "state machine executed, awaiting "$OBJECT_KEY" existence"
+
+check_s3_object "$OBJECT_KEY"
+exists=$?
+while [ $exists -ne 0 ]; do
+    echo "$OBJECT_KEY does not exist. Waiting for a minute and checking again" $(env TZ=US/Eastern date +'%Y%m%d%H%M%S')
+    sleep 60
+    check_s3_object "$OBJECT_KEY"
+    exists=$?
+done
+echo "$OBJECT_KEY exists, launching next run in 10 seconds"    
+sleep 10
+
+for vpu in "${VPUs[@]}"; do
+    file="execution_$vpu.json"
+    
     echo "Executing state machine $SM_ARN with $file"
     aws stepfunctions start-execution \
         --state-machine-arn $SM_ARN \
         --name $(env TZ=US/Eastern date +'%Y%m%d%H%M%S')\
         --input "file://"$EXEC_DIR""$file"" --region $REGION 
-
-    sleep 5
+    sleep 10
 done
